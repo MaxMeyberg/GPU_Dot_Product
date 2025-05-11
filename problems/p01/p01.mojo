@@ -1,49 +1,61 @@
+# ===----------------------------------------------------------------------=== #
+# Copyright (c) 2025, Modular Inc. All rights reserved.
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions:
+# https://llvm.org/LICENSE.txt
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ===----------------------------------------------------------------------=== #
+# RUN: %mojo-no-debug %s | FileCheck %s
+
+from math import ceildiv, erf, exp, tanh
+from sys.info import num_physical_cores, simdwidthof
+
+from algorithm import elementwise
+from buffer import NDBuffer
 from memory import UnsafePointer
-from gpu import thread_idx
-from gpu.host import DeviceContext
-from testing import assert_equal
 
-# ANCHOR: add_10
-alias SIZE = 4
-alias BLOCKS_PER_GRID = 1
-alias THREADS_PER_BLOCK = SIZE
-alias dtype = DType.float32
+from utils.index import IndexList
 
 
-fn add_10(out: UnsafePointer[Scalar[dtype]], a: UnsafePointer[Scalar[dtype]]):
-    i = thread_idx.x
-    # FILL ME IN (roughly 1 line)
+# CHECK-LABEL: test_elementwise_1d
+def test_elementwise_1d():
+    print("== test_elementwise_1d")
+
+    alias num_elements = 2
+    var ptr = UnsafePointer[Float32].alloc(num_elements)
+
+    var vector = NDBuffer[DType.float32, 1, _, num_elements](ptr)
+    var ptr2 = UnsafePointer[Float32].alloc(num_elements)
+    var vector2 = NDBuffer[DType.float32, 1, _, num_elements](ptr2)
+
+    for i in range(len(vector)):
+        vector[i] = i
+        vector2[i] = i + len(vector)  # or any constant/vector you want to dot with
+    var sum: Float32 = 0.0
 
 
-# ANCHOR_END: add_10
+    @always_inline
+    # @__copy_capture(vector, vector2, sum)
+    @parameter
+    fn func[simd_width: Int, rank: Int](idx: IndexList[rank]):
+        var elem = vector.load[width=simd_width](idx[0])
+        var other = vector2.load[width=simd_width](idx[0])
+        # var val = elem 
+        for i in range(simd_width):
+            sum += elem[i] * other[i]
+
+    elementwise[func, simdwidthof[DType.float32]()](IndexList[1](num_elements))
+
+    # CHECK: 2.051446{{[0-9]+}}
+    print("Dot Product:", sum)
+
+    ptr.free()
 
 
 def main():
-    with DeviceContext() as ctx:
-        out = ctx.enqueue_create_buffer[dtype](SIZE)
-        out = out.enqueue_fill(0)
-        a = ctx.enqueue_create_buffer[dtype](SIZE)
-        a = a.enqueue_fill(0)
-        with a.map_to_host() as a_host:
-            for i in range(SIZE):
-                a_host[i] = i
-
-        ctx.enqueue_function[add_10](
-            out.unsafe_ptr(),
-            a.unsafe_ptr(),
-            grid_dim=BLOCKS_PER_GRID,
-            block_dim=THREADS_PER_BLOCK,
-        )
-
-        expected = ctx.enqueue_create_host_buffer[dtype](SIZE)
-        expected = expected.enqueue_fill(0)
-        ctx.synchronize()
-
-        for i in range(SIZE):
-            expected[i] = i + 10
-
-        with out.map_to_host() as out_host:
-            print("out:", out_host)
-            print("expected:", expected)
-            for i in range(SIZE):
-                assert_equal(out_host[i], expected[i])
+    test_elementwise_1d()
